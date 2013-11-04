@@ -9,6 +9,7 @@
 #include <cuda.h>
 #include <cmath>
 #include "glm/glm.hpp"
+#include "rasterizeStructs.h"
 
 #if CUDA_VERSION >= 5000
     #include <helper_math.h>
@@ -17,7 +18,8 @@
 #endif
 
 void kernelCleanup();
-void cudaRasterizeCore(uchar4* PBOpos, glm::vec2 resolution, glm::vec3 eye, glm::vec3 center, float frame, float* vbo,
-											 int vbosize, float* cbo, int cbosize, float* nbo, int nbosize, int* ibo, int ibosize);
+void initCudaArrays(glm::vec2 resolution, float* vbo, int vbosize, float* cbo, int cbosize, float* nbo, int nbosize, int* ibo, int ibosize);
+void cudaRasterizeCore(uchar4* PBOpos, glm::vec2 resolution, glm::vec3 eye, glm::vec3 center, float frame,
+											 int vbosize, int cbosize, int nbosize, int ibosize);
 
 #endif //RASTERIZEKERNEL_H

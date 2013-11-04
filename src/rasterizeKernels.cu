@@ -20,10 +20,18 @@
 glm::vec3* framebuffer;
 fragment* depthbuffer;
 float* device_vbo;
+float* device_vbo_trans; //transformed vbo
 float* device_cbo;
 float* device_nbo;
 int* device_ibo;
+triangle* primitives;
 triangle* validPrimitives;
+
+//for stream compaction
+int* validArray;
+int* scanArray;
+int* sumArray1;
+int* sumArray2;
 
 glm::vec3 up(0, 1, 0);
 float fovy = 60;
@@ -186,14 +194,14 @@ __global__ void primitiveAssemblyKernel(float* vbo, int vbosize, float* cbo, int
 }
 
 //TODO: Implement a vertex shader
-__global__ void vertexShadeKernel(float* vbo, int vbosize, glm::mat4 cameraMatrix, glm::vec2 resolution){
+__global__ void vertexShadeKernel(float* vbo, int vbosize, float* tvbo, glm::mat4 cameraMatrix, glm::vec2 resolution){
   int index = (blockIdx.x * blockDim.x) + threadIdx.x;
   if(index<vbosize/3){
 	  glm::vec3 v(vbo[index*3], vbo[index*3+1], vbo[index*3+2]);
 	  v = transformPos(v, cameraMatrix, resolution);
-	  vbo[index*3] = v.x;
-	  vbo[index*3+1] = v.y;
-	  vbo[index*3+2] = v.z;
+	  tvbo[index*3] = v.x;
+	  tvbo[index*3+1] = v.y;
+	  tvbo[index*3+2] = v.z;
   }
 }
 
@@ -451,21 +459,61 @@ __global__ void render(glm::vec2 resolution, fragment* depthbuffer, glm::vec3* f
   }
 }
 
-// Wrapper for the __global__ call that sets up the kernel calls and does a ton of memory management
-void cudaRasterizeCore(uchar4* PBOpos, glm::vec2 resolution, glm::vec3 eye, glm::vec3 center, float frame, float* vbo,
-											 int vbosize, float* cbo, int cbosize, float* nbo, int nbosize, int* ibo, int ibosize){
-  // set up crucial magic
-  int tileSize = 8;
-  dim3 threadsPerBlock(tileSize, tileSize);
-  dim3 fullBlocksPerGrid((int)ceil(float(resolution.x)/float(tileSize)), (int)ceil(float(resolution.y)/float(tileSize)));
-
-  //set up framebuffer
+void initCudaArrays(glm::vec2 resolution, float* vbo, int vbosize, float* cbo, int cbosize, float* nbo, int nbosize, int* ibo, int ibosize) {
+	//set up framebuffer
   framebuffer = NULL;
   cudaMalloc((void**)&framebuffer, (int)resolution.x*(int)resolution.y*sizeof(glm::vec3));
   
   //set up depthbuffer
   depthbuffer = NULL;
   cudaMalloc((void**)&depthbuffer, (int)resolution.x*(int)resolution.y*sizeof(fragment));
+
+	primitives = NULL;
+	int primcount = ibosize/3;
+  cudaMalloc((void**)&primitives, primcount*sizeof(triangle));
+
+	validPrimitives = NULL;
+	cudaMalloc((void**)&validPrimitives, primcount*sizeof(triangle));
+
+  device_ibo = NULL;
+  cudaMalloc((void**)&device_ibo, ibosize*sizeof(int));
+  cudaMemcpy( device_ibo, ibo, ibosize*sizeof(int), cudaMemcpyHostToDevice);
+
+  device_vbo = NULL;
+  cudaMalloc((void**)&device_vbo, vbosize*sizeof(float));
+  cudaMemcpy( device_vbo, vbo, vbosize*sizeof(float), cudaMemcpyHostToDevice);
+
+	device_vbo_trans = NULL;
+  cudaMalloc((void**)&device_vbo_trans, vbosize*sizeof(float));
+
+  device_cbo = NULL;
+  cudaMalloc((void**)&device_cbo, cbosize*sizeof(float));
+  cudaMemcpy( device_cbo, cbo, cbosize*sizeof(float), cudaMemcpyHostToDevice);
+
+  device_nbo = NULL;
+  cudaMalloc((void**)&device_nbo, nbosize*sizeof(float));
+  cudaMemcpy( device_nbo, nbo, nbosize*sizeof(float), cudaMemcpyHostToDevice);
+
+	validArray = NULL;
+	cudaMalloc((void**)&validArray, primcount*sizeof(int));
+
+	scanArray = NULL;
+	cudaMalloc((void**)&scanArray, primcount*sizeof(int));
+
+	sumArray1 = NULL;
+	sumArray2 = NULL;
+	int sumArrayLength = ceil(((float)primcount)/((float)64));
+	cudaMalloc((void**)&sumArray1, sumArrayLength*sizeof(int));
+	cudaMalloc((void**)&sumArray2, sumArrayLength*sizeof(int));
+}
+
+// Wrapper for the __global__ call that sets up the kernel calls and does a ton of memory management
+void cudaRasterizeCore(uchar4* PBOpos, glm::vec2 resolution, glm::vec3 eye, glm::vec3 center, float frame,
+											 int vbosize, int cbosize, int nbosize, int ibosize){
+  // set up crucial magic
+  int tileSize = 8;
+  dim3 threadsPerBlock(tileSize, tileSize);
+  dim3 fullBlocksPerGrid((int)ceil(float(resolution.x)/float(tileSize)), (int)ceil(float(resolution.y)/float(tileSize)));
 
   //kernel launches to black out accumulated/unaccumlated pixel buffers and clear our scattering states
   clearImage<<<fullBlocksPerGrid, threadsPerBlock>>>(resolution, framebuffer, glm::vec3(0,0,0));
@@ -477,29 +525,7 @@ void cudaRasterizeCore(uchar4* PBOpos, glm::vec2 resolution, glm::vec3 eye, glm:
   frag.z = -FLT_MAX;
   clearDepthBuffer<<<fullBlocksPerGrid, threadsPerBlock>>>(resolution, depthbuffer,frag);
 
-  //------------------------------
-  //memory stuff
-  //------------------------------
-  triangle* primitives = NULL;
 	int primcount = ibosize/3;
-  cudaMalloc((void**)&primitives, primcount*sizeof(triangle));
-
-  device_ibo = NULL;
-  cudaMalloc((void**)&device_ibo, ibosize*sizeof(int));
-  cudaMemcpy( device_ibo, ibo, ibosize*sizeof(int), cudaMemcpyHostToDevice);
-
-  device_vbo = NULL;
-  cudaMalloc((void**)&device_vbo, vbosize*sizeof(float));
-  cudaMemcpy( device_vbo, vbo, vbosize*sizeof(float), cudaMemcpyHostToDevice);
-
-  device_cbo = NULL;
-  cudaMalloc((void**)&device_cbo, cbosize*sizeof(float));
-  cudaMemcpy( device_cbo, cbo, cbosize*sizeof(float), cudaMemcpyHostToDevice);
-
-  device_nbo = NULL;
-  cudaMalloc((void**)&device_nbo, nbosize*sizeof(float));
-  cudaMemcpy( device_nbo, nbo, nbosize*sizeof(float), cudaMemcpyHostToDevice);
-
   tileSize = 64;
 
   //------------------------------
@@ -517,53 +543,52 @@ void cudaRasterizeCore(uchar4* PBOpos, glm::vec2 resolution, glm::vec3 eye, glm:
   primitiveAssemblyKernel<<<primitiveBlocks, tileSize>>>(device_vbo, vbosize, device_cbo, cbosize, device_nbo, nbosize, device_ibo, ibosize, primitives);
 
   cudaDeviceSynchronize();
-
-	//triangle* prim_cpu = new triangle[ibosize/3];
- // cudaMemcpy(prim_cpu, primitives, ibosize/3*sizeof(triangle), cudaMemcpyDeviceToHost);
- // triangle t = prim_cpu[0];
+	checkCUDAError("Kernel failed!");
 
   //------------------------------
   //vertex shader
   //------------------------------
 	primitiveBlocks = ceil(((float)vbosize/3)/((float)tileSize));
-  vertexShadeKernel<<<primitiveBlocks, tileSize>>>(device_vbo, vbosize, cameraMatrix, resolution);
+	vertexShadeKernel<<<primitiveBlocks, tileSize>>>(device_vbo, vbosize, device_vbo_trans, cameraMatrix, resolution);
 
   cudaDeviceSynchronize();
+	checkCUDAError("Kernel failed!");
 
   //------------------------------
   //update primitives
   //------------------------------
 	primitiveBlocks = ceil(((float)primcount)/((float)tileSize));
-  updatePrimitiveKernel<<<primitiveBlocks, tileSize>>>(device_vbo, vbosize, device_ibo, ibosize, primitives);
+  updatePrimitiveKernel<<<primitiveBlocks, tileSize>>>(device_vbo_trans, vbosize, device_ibo, ibosize, primitives);
 
   cudaDeviceSynchronize();
+	checkCUDAError("Kernel failed!");
 
-  //cudaMemcpy(prim_cpu, primitives, ibosize/3*sizeof(triangle), cudaMemcpyDeviceToHost);
-  //t = prim_cpu[0];
+ // triangle* prim_cpu = new triangle[primcount];
+ // cudaMemcpy(prim_cpu, primitives, primcount*sizeof(triangle), cudaMemcpyDeviceToHost);
+ // triangle t0 = prim_cpu[0];
+	//triangle t1 = prim_cpu[1];
+	//triangle t2 = prim_cpu[2];
+	//triangle t3 = prim_cpu[3];
+	//triangle t4 = prim_cpu[4];
+	//triangle t5 = prim_cpu[5];
 
 	//------------------------------
   //back face culling and clipping
   //------------------------------
-	int* validArray = NULL;
-	cudaMalloc((void**)&validArray, primcount*sizeof(int));
-
 	validatePrims<<<primitiveBlocks, tileSize>>>(primitives, primcount, validArray, center-eye, resolution);
 	cudaDeviceSynchronize();
+	checkCUDAError("Kernel failed!");
 	
 	//stream compaction
-	int* scanArray = NULL;
-	cudaMalloc((void**)&scanArray, primcount*sizeof(int));
 	copy<<<primitiveBlocks, tileSize>>>(validArray, primcount, scanArray);
 	cudaDeviceSynchronize();
+	checkCUDAError("Kernel failed!");
 
-	int* sumArray1 = NULL;
-	int* sumArray2 = NULL;
-	int sumArrayLength = primitiveBlocks;
-	cudaMalloc((void**)&sumArray1, sumArrayLength*sizeof(int));
-	cudaMalloc((void**)&sumArray2, sumArrayLength*sizeof(int));
 	sharedMemoryScan<<<primitiveBlocks, tileSize>>>(scanArray, sumArray1, primcount);
 	cudaDeviceSynchronize();
+	checkCUDAError("Kernel failed!");
 
+	int sumArrayLength = ceil(((float)primcount)/((float)64));
 	int naiveScanBlocksPerGrid = ((int)ceil((float)sumArrayLength/(float)64), 24); // 24 is the number of SMs on my GPU
 	int naiveScanThreadsPerBlock = ceil((float)sumArrayLength/(float)naiveScanBlocksPerGrid);
 	int d = 1;
@@ -571,54 +596,52 @@ void cudaRasterizeCore(uchar4* PBOpos, glm::vec2 resolution, glm::vec3 eye, glm:
 		// use double buffer
 		if (d % 2 == 1) {
 			naiveScan<<<naiveScanBlocksPerGrid, naiveScanThreadsPerBlock>>>(sumArray1, sumArray2, d, sumArrayLength);
-			cudaDeviceSynchronize();
 		}
 		else {
 			naiveScan<<<naiveScanBlocksPerGrid, naiveScanThreadsPerBlock>>>(sumArray2, sumArray1, d, sumArrayLength);
-			cudaDeviceSynchronize();
 		}
+		cudaDeviceSynchronize();
 	}
 	if (d % 2 == 1) {
 		addToScanArray<<<primitiveBlocks, tileSize>>>(scanArray, sumArray1, primcount);
-		cudaDeviceSynchronize();
 	}
 	else {
 		addToScanArray<<<primitiveBlocks, tileSize>>>(scanArray, sumArray2, primcount);
-		cudaDeviceSynchronize();
 	}
+	cudaDeviceSynchronize();
+	checkCUDAError("Kernel failed!");
 
 	int* validPrimCount = new int[1];
 	cudaMemcpy(validPrimCount, scanArray + primcount - 1, sizeof(int), cudaMemcpyDeviceToHost);
 
-	validPrimitives = NULL;
-	cudaMalloc((void**)&validPrimitives, validPrimCount[0]*sizeof(triangle));
 	scatter<<<primitiveBlocks, tileSize>>>(primitives, validArray, scanArray, validPrimitives, primcount);
 	cudaDeviceSynchronize();
+	checkCUDAError("Kernel failed!");
 
 	primcount = validPrimCount[0];
 	delete [] validPrimCount;
 
-	cudaFree(validArray);
-	cudaFree(scanArray);
-	cudaFree(sumArray1);
-	cudaFree(sumArray2);
-	cudaFree(primitives);
+	if (primcount > 0) {
+		//------------------------------
+		//rasterization
+		//------------------------------
+		primitiveBlocks = ceil(((float)primcount)/((float)tileSize));
+		rasterizationKernel<<<primitiveBlocks, tileSize>>>(validPrimitives, primcount, depthbuffer, resolution);
 
-  //------------------------------
-  //rasterization
-  //------------------------------
-	tileSize = 64;
-	primitiveBlocks = ceil(((float)primcount)/((float)tileSize));
-	rasterizationKernel<<<primitiveBlocks, tileSize>>>(validPrimitives, primcount, depthbuffer, resolution);
+		cudaDeviceSynchronize();
+		checkCUDAError("Kernel failed!");
 
-  cudaDeviceSynchronize();
+		//------------------------------
+		//fragment shader
+		//------------------------------
+		fragmentShadeKernel<<<fullBlocksPerGrid, threadsPerBlock>>>(depthbuffer, resolution, lightPos, lightColor);
 
-  //------------------------------
-  //fragment shader
-  //------------------------------
-  fragmentShadeKernel<<<fullBlocksPerGrid, threadsPerBlock>>>(depthbuffer, resolution, lightPos, lightColor);
-
-  cudaDeviceSynchronize();
+		cudaDeviceSynchronize();
+		checkCUDAError("Kernel failed!");
+	}
+	else {
+		clearDepthBuffer<<<fullBlocksPerGrid, threadsPerBlock>>>(resolution, depthbuffer,frag);
+	}
   //------------------------------
   //write fragments to framebuffer
   //------------------------------
@@ -626,13 +649,11 @@ void cudaRasterizeCore(uchar4* PBOpos, glm::vec2 resolution, glm::vec3 eye, glm:
   sendImageToPBO<<<fullBlocksPerGrid, threadsPerBlock>>>(PBOpos, resolution, framebuffer);
 
   cudaDeviceSynchronize();
-
-  kernelCleanup();
-
   checkCUDAError("Kernel failed!");
 }
 
 void kernelCleanup(){
+	cudaFree( primitives );
   cudaFree( validPrimitives );
   cudaFree( device_vbo );
   cudaFree( device_cbo );
@@ -640,5 +661,9 @@ void kernelCleanup(){
   cudaFree( device_ibo );
   cudaFree( framebuffer );
   cudaFree( depthbuffer );
+	cudaFree( validArray );
+	cudaFree( scanArray );
+	cudaFree( sumArray1 );
+	cudaFree( sumArray2 );
 }
 

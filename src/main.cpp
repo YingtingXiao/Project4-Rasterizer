@@ -90,44 +90,9 @@ void runCuda(){
   // No data is moved (Win & Linux). When mapped to CUDA, OpenGL should not use this buffer
   dptr=NULL;
 
-  vbo = mesh->getVBO();
-  vbosize = mesh->getVBOsize();
-
-  //float newcbo[] = {0.0, 1.0, 0.0, 
-  //                  0.0, 0.0, 1.0, 
-  //                  1.0, 0.0, 0.0};
-
-	//blue
-  float newcbo[] = {0.4, 0.7, 1.0, 
-                    0.4, 0.7, 1.0, 
-                    0.4, 0.7, 1.0};
-
-	//gold
-	//float newcbo[] = {1.0, 0.77, 0.03, 
- //                   1.0, 0.77, 0.03, 
- //                   1.0, 0.77, 0.03};
-
-	//grey
-	//float newcbo[] = {0.6, 0.6, 0.6, 
-  //                  0.6, 0.6, 0.6, 
-  //                   0.6, 0.6, 0.6};
-
-  cbo = newcbo;
-  cbosize = 9;
-
-  nbo = mesh->getNBO();
-  nbosize = mesh->getNBOsize();
-
-  ibo = mesh->getIBO();
-  ibosize = mesh->getIBOsize();
-
   cudaGLMapBufferObject((void**)&dptr, pbo);
-  cudaRasterizeCore(dptr, glm::vec2(width, height), eye, center, frame, vbo, vbosize, cbo, cbosize, nbo, nbosize, ibo, ibosize);
+  cudaRasterizeCore(dptr, glm::vec2(width, height), eye, center, frame, vbosize, cbosize, nbosize, ibosize);
   cudaGLUnmapBufferObject(pbo);
-
-  vbo = NULL;
-  cbo = NULL;
-  ibo = NULL;
 
   frame++;
   fpstracker++;
@@ -341,6 +306,44 @@ void initCuda(){
 
   // Clean up on program exit
   atexit(cleanupCuda);
+
+	vbo = mesh->getVBO();
+  vbosize = mesh->getVBOsize();
+
+  //float newcbo[] = {0.0, 1.0, 0.0, 
+  //                  0.0, 0.0, 1.0, 
+  //                  1.0, 0.0, 0.0};
+
+	//blue
+  float newcbo[] = {0.4, 0.7, 1.0, 
+                    0.4, 0.7, 1.0, 
+                    0.4, 0.7, 1.0};
+
+	//gold
+	//float newcbo[] = {1.0, 0.77, 0.03, 
+ //                   1.0, 0.77, 0.03, 
+ //                   1.0, 0.77, 0.03};
+
+	//grey
+	//float newcbo[] = {0.6, 0.6, 0.6, 
+  //                  0.6, 0.6, 0.6, 
+  //                   0.6, 0.6, 0.6};
+
+  cbo = newcbo;
+  cbosize = 9;
+
+  nbo = mesh->getNBO();
+  nbosize = mesh->getNBOsize();
+
+  ibo = mesh->getIBO();
+  ibosize = mesh->getIBOsize();
+
+	initCudaArrays(glm::vec2(width, height), vbo, vbosize, cbo, cbosize, nbo, nbosize, ibo, ibosize);
+
+	vbo = NULL;
+  cbo = NULL;
+	nbo = NULL;
+  ibo = NULL;
 
   runCuda();
 }
