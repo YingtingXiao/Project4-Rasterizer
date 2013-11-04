@@ -236,7 +236,7 @@ __global__ void validatePrims(triangle* primitives, int primitiveCount, int* val
 			//clipping
 			validArray[index] = 0;
 		}
-		else if (glm::dot(view, prim.n0) > 0 && glm::dot(view, prim.n1) > 0 && glm::dot(view, prim.n2) > 0) {
+		else if (glm::dot(view, prim.n0) > 0.1 && glm::dot(view, prim.n1) > 0.1 && glm::dot(view, prim.n2) > 0.1) {
 			//back face culling
 			validArray[index] = 0;
 		}
